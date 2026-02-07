@@ -1,0 +1,18 @@
+# Virtual environment — never track this.
+# Anyone who clones your repo will create their own via: pip install -r requirements.txt
+.venv/
+
+# Python creates these automatically when your code runs.
+# They're cached bytecode files — not your source code.
+__pycache__/
+
+# Environment variables file — may contain your API key.
+# NEVER commit secrets to Git.
+.env
+
+# macOS creates this hidden file in every folder you open in Finder.
+# It stores things like icon positions — not relevant to your project.
+.DS_Store
+
+# VSCode editor settings — personal to your setup, not part of the project.
+.vscode/
