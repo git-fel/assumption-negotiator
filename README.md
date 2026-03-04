@@ -80,33 +80,33 @@ Save and reload:
 source ~/.zshrc
 ```
 
-**5. Run it**
+**5. Run the main interface**
+
 ```bash
-python main.py
+python server.py
 ```
 
-### What It Looks Like
+Then open your browser to: **http://localhost:5001**
 
-```
-PLEASE ENTER YOUR QUERY: Should I buy oat milk or regular milk for my coffee?
+> **Why 5001?** macOS uses port 5000 for AirPlay Receiver, which would cause a conflict.
 
-INITIAL RECOMMENDATION: I recommend oat milk for your coffee, as it provides excellent texture...
+> **Why `server.py` instead of Flask?** `server.py` uses Python's built-in `http.server` module — no extra installation needed. It does the same job as Flask but without the dependency.
 
-THIS RECOMMENDATION IS BASED ON THE FOLLOWING ASSUMPTIONS. PLEASE REVIEW THEM:
+This serves a ChatGPT-accurate interface with:
+- Right-aligned user message bubbles (light purple)
+- Mode pill in the header (like ChatGPT's "Free coding agent")
+- "+" button to switch between Chat and Assumption Negotiator modes
+- Typing indicator, feedback icons, and the exact ChatGPT input bar
 
-A1: You don't have lactose intolerance or dairy allergies as a primary concern
-IS THIS ASSUMPTION CORRECT? (yes/no):
+**Other versions (older):**
 
-A2: You care about environmental impact and sustainability in your purchasing decisions
-IS THIS ASSUMPTION CORRECT? (yes/no):
-
-...
-
-DO YOU WANT THE SYSTEM TO CONSIDER ANY NEW FACTOR? (yes/no): yes
-PLEASE ENTER THE NEW CONSIDERATION: I have a nut allergy
-
-REVISED RECOMMENDATION: Oat milk remains the best choice given your nut allergy...
-```
+| File | How to Run | Notes |
+|---|---|---|
+| `main.py` | `python main.py` | Original command-line version |
+| `app_flask.py` | `python app_flask.py` | Flask backend (requires `flask` package) |
+| `app.py` | `streamlit run app.py` | Streamlit version with dark theme |
+| `app_buttons.py` | `streamlit run app_buttons.py` | Streamlit, buttons only |
+| `app_chat.py` | `streamlit run app_chat.py` | Streamlit, chat-style |
 
 ---
 
@@ -256,10 +256,17 @@ Track system effectiveness through behavior change (critical thinking about reco
 
 ### Project Structure
 ```
-hitl/
-├── main.py              # Main program (208 lines)
-├── requirements.txt     # Dependencies (anthropic)
-└── README.md           # This file
+assumption-negotiator/
+├── server.py            # ★ Main entry point: built-in Python web server (no Flask needed)
+├── templates/
+│   └── index.html       # ★ ChatGPT-accurate UI (HTML + CSS + JavaScript)
+├── main.py              # Original command-line version
+├── app_flask.py         # Older Flask backend (requires flask package)
+├── app.py               # Older Streamlit version (dark theme, two modes)
+├── app_buttons.py       # Older Streamlit version (buttons only)
+├── app_chat.py          # Older Streamlit version (chat-style)
+├── requirements.txt     # Dependencies: anthropic, streamlit (flask optional)
+└── README.md            # This file
 ```
 
 ### Key Functions

@@ -1,0 +1,1268 @@
+<!DOCTYPE html>
+<!--
+  Claude — ChatGPT-style Interface
+  ==================================
+  This file is the entire visual interface. It runs in your browser.
+
+  HOW THIS FILE IS STRUCTURED:
+    1. <head>   — Page settings and all the CSS styling (colors, layout, fonts)
+    2. <body>   — The visible HTML elements (header, chat area, input bar)
+    3. <script> — The JavaScript logic that makes it interactive:
+                    - Sends messages to the Flask server (app_flask.py)
+                    - Receives responses and displays them in the chat
+                    - Manages the assumption negotiation workflow
+
+  HOW THE BROWSER AND SERVER TALK:
+    When you type a message and press send, JavaScript uses `fetch()` to send
+    a request to Flask (e.g. POST /api/chat). Flask calls the Anthropic API
+    and sends back a JSON response. JavaScript then displays that response.
+
+  WHAT "STATE" MEANS HERE:
+    State is a JavaScript object that remembers things between interactions:
+      mode        → "chat" or "assumption"
+      phase       → which step of the assumption workflow we're on
+      messages    → conversation history (for regular chat)
+      etc.
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Claude</title>
+
+  <!--
+    marked.js: A library that converts Markdown text to HTML.
+    Claude's responses often contain **bold**, bullet points, etc.
+    This library handles converting that into real formatting.
+  -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+  <style>
+    /* ─────────────────────────────────────────────────────────────────────────
+       RESET & BASE
+       Remove browser default spacing and set up the base font/colors.
+       ChatGPT uses a clean sans-serif font (Söhne), we approximate with system fonts.
+    ───────────────────────────────────────────────────────────────────────── */
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      font-size: 15px;
+      line-height: 1.65;
+      background: #ffffff;
+      color: #0d0d0d;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;   /* Prevent the whole page from scrolling; only the chat area scrolls */
+    }
+
+    /* ─────────────────────────────────────────────────────────────────────────
+       HEADER
+       Matches ChatGPT: model name on the left, mode pill on the right.
+    ───────────────────────────────────────────────────────────────────────── */
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 16px;
+      border-bottom: 1px solid #e5e5e5;
+      flex-shrink: 0;   /* Don't let the header shrink when the chat grows */
+      background: #fff;
+    }
+
+    /* "Claude ▾" — the model name with a dropdown-style chevron */
+    .model-name {
+      font-size: 1rem;
+      font-weight: 600;
+      color: #0d0d0d;
+      cursor: default;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .model-name .chevron {
+      font-size: 0.7rem;
+      color: #6b6b6b;
+    }
+
+    /*
+      The mode pill (e.g. "🧠 Assumption Negotiator ×").
+      Matches the purple "+ Free coding agent ×" pill in the ChatGPT screenshot.
+      Hidden by default; shown when Assumption Negotiator mode is active.
+    */
+    .mode-pill {
+      background: #7c3aed;   /* Purple — matches ChatGPT's agent pill color */
+      color: #fff;
+      border: none;
+      border-radius: 999px;   /* Fully rounded → pill shape */
+      padding: 5px 14px;
+      font-size: 0.82rem;
+      font-weight: 500;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: background 0.15s ease;
+    }
+    .mode-pill:hover {
+      background: #6d28d9;
+    }
+    .mode-pill .close-x {
+      font-size: 1rem;
+      line-height: 1;
+      opacity: 0.8;
+    }
+    .mode-pill.hidden {
+      display: none;
+    }
+
+    /* ─────────────────────────────────────────────────────────────────────────
+       CHAT AREA
+       The scrollable center column where messages appear.
+       Max-width matches ChatGPT's reading width (~48rem / 768px).
+    ───────────────────────────────────────────────────────────────────────── */
+    .chat-area {
+      flex: 1;              /* Takes up all available space between header and footer */
+      overflow-y: auto;     /* Scrolls when messages overflow */
+      padding: 24px 16px 16px;
+    }
+
+    /* Inner container — keeps messages centered at the right width */
+    .chat-inner {
+      max-width: 48rem;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    /* ─────────────────────────────────────────────────────────────────────────
+       MESSAGE ROWS
+       Each message is a "row" that positions the bubble correctly.
+       User messages: right-aligned (flex-direction: row-reverse)
+       Assistant messages: left-aligned (default)
+    ───────────────────────────────────────────────────────────────────────── */
+    .message-row {
+      display: flex;
+      align-items: flex-start;
+      margin: 6px 0;
+    }
+    .message-row.user {
+      flex-direction: row-reverse;  /* Flip direction to push bubble to the right */
+    }
+    .message-row.assistant {
+      flex-direction: row;
+    }
+
+    /*
+      The message bubble itself.
+      User: rounded pill with light purple background (matches ChatGPT screenshot).
+      Assistant: no background, just text (ChatGPT style).
+    */
+    .message-bubble {
+      max-width: 75%;
+      line-height: 1.65;
+      font-size: 0.95rem;
+    }
+
+    /* User message — light lavender/purple bubble, right side */
+    .message-bubble.user {
+      background: #ede9fe;      /* Lavender — matches ChatGPT user bubble color */
+      color: #0d0d0d;
+      padding: 10px 16px;
+      border-radius: 20px;
+      border-bottom-right-radius: 4px;   /* Slight "tail" on the bottom right */
+    }
+
+    /* Assistant message — no bubble, plain text */
+    .message-bubble.assistant {
+      background: transparent;
+      color: #0d0d0d;
+      padding: 4px 0;
+    }
+
+    /* Make sure Claude's markdown renders nicely */
+    .message-bubble.assistant p        { margin-bottom: 10px; }
+    .message-bubble.assistant p:last-child { margin-bottom: 0; }
+    .message-bubble.assistant ul,
+    .message-bubble.assistant ol       { padding-left: 1.5rem; margin-bottom: 10px; }
+    .message-bubble.assistant li       { margin-bottom: 4px; }
+    .message-bubble.assistant h1,
+    .message-bubble.assistant h2,
+    .message-bubble.assistant h3       { margin: 14px 0 6px; font-weight: 700; }
+    .message-bubble.assistant strong   { font-weight: 600; }
+    .message-bubble.assistant hr       { border: none; border-top: 1px solid #e5e5e5; margin: 14px 0; }
+    .message-bubble.assistant blockquote {
+      border-left: 3px solid #e5e5e5;
+      padding-left: 12px;
+      color: #6b6b6b;
+      margin: 8px 0;
+    }
+
+    /* Feedback icons row below assistant messages (thumbs, copy, refresh) */
+    .feedback-row {
+      display: flex;
+      gap: 8px;
+      padding: 6px 0 10px;
+      margin-left: 2px;
+    }
+    .feedback-icon {
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: #6b6b6b;
+      font-size: 0.85rem;
+      padding: 2px 4px;
+      border-radius: 4px;
+      transition: color 0.15s, background 0.15s;
+    }
+    .feedback-icon:hover {
+      color: #0d0d0d;
+      background: #f4f4f4;
+    }
+
+    /* ─────────────────────────────────────────────────────────────────────────
+       ASSUMPTION CARDS
+       Shown in the chat area during assumption review phase.
+       Each card has: assumption key, text, and Yes/No buttons.
+    ───────────────────────────────────────────────────────────────────────── */
+    .assumption-cards-wrapper {
+      max-width: 48rem;
+      margin: 0 auto;
+      padding: 8px 16px;
+    }
+
+    .section-label {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: #6b6b6b;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 10px;
+    }
+
+    .assumption-card {
+      background: #fafafa;
+      border: 1px solid #e5e5e5;
+      border-radius: 12px;
+      padding: 14px 16px;
+      margin-bottom: 8px;
+      transition: border-color 0.2s;
+    }
+    .assumption-card.accepted {
+      border-color: #86efac;  /* Green border when accepted */
+      background: #f0fdf4;
+    }
+    .assumption-card.rejected {
+      border-color: #fca5a5;  /* Red border when rejected */
+      background: #fef2f2;
+    }
+
+    .assumption-key {
+      font-size: 0.78rem;
+      font-weight: 700;
+      color: #6b6b6b;
+      margin-bottom: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    .assumption-text {
+      font-size: 0.93rem;
+      color: #0d0d0d;
+      margin-bottom: 12px;
+      line-height: 1.5;
+    }
+
+    .assumption-result {
+      font-size: 0.85rem;
+      font-weight: 500;
+    }
+    .assumption-result.yes { color: #16a34a; }
+    .assumption-result.no  { color: #dc2626; }
+
+    .assumption-buttons {
+      display: flex;
+      gap: 8px;
+    }
+    .assumption-btn {
+      padding: 6px 18px;
+      border-radius: 8px;
+      border: 1px solid #e5e5e5;
+      cursor: pointer;
+      font-size: 0.85rem;
+      font-weight: 500;
+      background: #fff;
+      transition: all 0.15s ease;
+    }
+    .assumption-btn.yes {
+      color: #16a34a;
+      border-color: #16a34a;
+    }
+    .assumption-btn.yes:hover {
+      background: #dcfce7;
+    }
+    .assumption-btn.no {
+      color: #dc2626;
+      border-color: #dc2626;
+    }
+    .assumption-btn.no:hover {
+      background: #fee2e2;
+    }
+
+    /* ─────────────────────────────────────────────────────────────────────────
+       NEW FACTOR SECTION
+       Shown after all assumptions are answered.
+    ───────────────────────────────────────────────────────────────────────── */
+    .new-factor-section {
+      max-width: 48rem;
+      margin: 0 auto;
+      padding: 8px 16px 4px;
+    }
+
+    .new-factor-question {
+      font-size: 0.93rem;
+      color: #0d0d0d;
+      margin-bottom: 12px;
+    }
+
+    .new-factor-buttons {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .action-btn {
+      padding: 7px 20px;
+      border-radius: 8px;
+      border: 1px solid #e5e5e5;
+      cursor: pointer;
+      font-size: 0.85rem;
+      font-weight: 500;
+      background: #fff;
+      transition: all 0.15s;
+    }
+    .action-btn:hover { background: #f4f4f4; }
+    .action-btn.primary {
+      background: #0d0d0d;
+      color: #fff;
+      border-color: #0d0d0d;
+    }
+    .action-btn.primary:hover { background: #2d2d2d; }
+
+    .new-factor-input-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-top: 8px;
+    }
+    .new-factor-text {
+      flex: 1;
+      padding: 8px 14px;
+      border: 1px solid #e5e5e5;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .new-factor-text:focus {
+      border-color: #7c3aed;
+    }
+
+    /* ─────────────────────────────────────────────────────────────────────────
+       INPUT FOOTER
+       Fixed at the bottom. Matches ChatGPT's input bar design.
+    ───────────────────────────────────────────────────────────────────────── */
+    .input-footer {
+      flex-shrink: 0;
+      background: #fff;
+      padding: 10px 16px 12px;
+      border-top: 1px solid #e5e5e5;
+    }
+
+    /* The inner wrapper — max-width centered, like ChatGPT */
+    .input-wrapper {
+      max-width: 48rem;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: #f4f4f4;      /* Light gray container — matches screenshot */
+      border-radius: 24px;
+      padding: 8px 10px 8px 14px;
+    }
+
+    /* "+" button on the left of the input — triggers mode selection */
+    .plus-btn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-size: 1.3rem;
+      color: #6b6b6b;
+      line-height: 1;
+      padding: 0 2px;
+      border-radius: 50%;
+      width: 28px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.15s, color 0.15s;
+      flex-shrink: 0;
+    }
+    .plus-btn:hover {
+      background: #e5e5e5;
+      color: #0d0d0d;
+    }
+
+    /* The text input field */
+    .text-input {
+      flex: 1;
+      background: transparent;
+      border: none;
+      outline: none;
+      font-size: 0.95rem;
+      color: #0d0d0d;
+      min-width: 0;   /* Prevents overflow in flex containers */
+    }
+    .text-input::placeholder {
+      color: #8e8ea0;
+    }
+
+    /* Microphone icon — decorative (not wired up) */
+    .mic-btn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: #6b6b6b;
+      font-size: 1.1rem;
+      padding: 0 4px;
+      flex-shrink: 0;
+    }
+
+    /* Send button — black circle with white arrow, matches screenshot */
+    .send-btn {
+      background: #0d0d0d;
+      color: #fff;
+      border: none;
+      border-radius: 50%;
+      width: 32px;
+      height: 32px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1rem;
+      flex-shrink: 0;
+      transition: background 0.15s;
+    }
+    .send-btn:hover { background: #2d2d2d; }
+    .send-btn:disabled {
+      background: #d1d5db;
+      cursor: not-allowed;
+    }
+
+    /* "Claude can make mistakes. Check important info." */
+    .disclaimer {
+      max-width: 48rem;
+      margin: 6px auto 0;
+      text-align: center;
+      font-size: 0.75rem;
+      color: #8e8ea0;
+    }
+
+    /* ─────────────────────────────────────────────────────────────────────────
+       MODE SELECTOR DROPDOWN
+       Appears when you click "+", showing the two modes to choose from.
+    ───────────────────────────────────────────────────────────────────────── */
+    .mode-dropdown {
+      position: absolute;
+      bottom: 80px;   /* Above the input bar */
+      left: 50%;
+      transform: translateX(-50%);
+      max-width: 320px;
+      width: 90%;
+      background: #fff;
+      border: 1px solid #e5e5e5;
+      border-radius: 12px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
+      overflow: hidden;
+      z-index: 100;
+    }
+    .mode-dropdown.hidden { display: none; }
+
+    .mode-option {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 16px;
+      cursor: pointer;
+      border-bottom: 1px solid #f4f4f4;
+      transition: background 0.1s;
+    }
+    .mode-option:last-child { border-bottom: none; }
+    .mode-option:hover { background: #f9f9f9; }
+
+    .mode-option-icon { font-size: 1.2rem; }
+    .mode-option-info { flex: 1; }
+    .mode-option-name  { font-weight: 600; font-size: 0.9rem; color: #0d0d0d; }
+    .mode-option-desc  { font-size: 0.78rem; color: #6b6b6b; margin-top: 1px; }
+
+    /* ─────────────────────────────────────────────────────────────────────────
+       TYPING INDICATOR
+       Three animated dots that appear while waiting for a response.
+    ───────────────────────────────────────────────────────────────────────── */
+    .typing-indicator {
+      display: flex;
+      gap: 4px;
+      padding: 12px 4px;
+      align-items: center;
+    }
+    .typing-indicator span {
+      width: 7px;
+      height: 7px;
+      background: #aaa;
+      border-radius: 50%;
+      display: inline-block;
+      animation: bounce 1.2s infinite ease-in-out;
+    }
+    .typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
+    .typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
+
+    @keyframes bounce {
+      0%, 60%, 100% { transform: translateY(0); }
+      30%            { transform: translateY(-6px); }
+    }
+
+    /* ─────────────────────────────────────────────────────────────────────────
+       EMPTY STATE
+       Shown when the chat is empty (no messages yet).
+    ───────────────────────────────────────────────────────────────────────── */
+    .empty-state {
+      max-width: 48rem;
+      margin: 80px auto 0;
+      padding: 0 16px;
+      text-align: center;
+    }
+    .empty-state h2 {
+      font-size: 1.6rem;
+      font-weight: 700;
+      color: #0d0d0d;
+      margin-bottom: 8px;
+    }
+    .empty-state p {
+      font-size: 0.9rem;
+      color: #6b6b6b;
+    }
+  </style>
+</head>
+
+<body>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       HEADER
+       Left: model name ("Claude ▾")
+       Right: mode pill — hidden in Chat mode, visible in Assumption Negotiator mode
+  ═══════════════════════════════════════════════════════════════════════════ -->
+  <header class="header">
+    <div class="model-name">
+      Claude <span class="chevron">▾</span>
+    </div>
+
+    <!--
+      This pill is hidden by default.
+      It appears (via JavaScript) when the user activates Assumption Negotiator mode.
+      Clicking the "×" switches back to Chat mode.
+    -->
+    <button class="mode-pill hidden" id="mode-pill" onclick="exitAssumptionMode()">
+      🧠 Assumption Negotiator <span class="close-x">×</span>
+    </button>
+  </header>
+
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       CHAT AREA
+       Messages are injected here by JavaScript.
+  ═══════════════════════════════════════════════════════════════════════════ -->
+  <main class="chat-area" id="chat-area">
+
+    <!-- Empty state: shown before the first message -->
+    <div class="empty-state" id="empty-state">
+      <h2>What can I help with?</h2>
+      <p>
+        Chat mode: ask me anything.<br>
+        Assumption Negotiator mode: click <strong>+</strong> to activate.
+      </p>
+    </div>
+
+    <!-- Messages and assumption cards are injected here -->
+    <div class="chat-inner" id="chat-inner"></div>
+
+  </main>
+
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       INPUT FOOTER
+       Fixed at the bottom. Contains: + button, text input, mic, send.
+       The mode dropdown appears above this bar.
+  ═══════════════════════════════════════════════════════════════════════════ -->
+  <footer class="input-footer" style="position: relative;">
+
+    <!-- Mode selection dropdown — shown when "+" is clicked -->
+    <div class="mode-dropdown hidden" id="mode-dropdown">
+      <div class="mode-option" onclick="activateChatMode()">
+        <span class="mode-option-icon">💬</span>
+        <div class="mode-option-info">
+          <div class="mode-option-name">Chat</div>
+          <div class="mode-option-desc">Regular conversation with Claude</div>
+        </div>
+      </div>
+      <div class="mode-option" onclick="activateAssumptionMode()">
+        <span class="mode-option-icon">🧠</span>
+        <div class="mode-option-info">
+          <div class="mode-option-name">Assumption Negotiator</div>
+          <div class="mode-option-desc">Get a recommendation with transparent assumptions</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="input-wrapper">
+      <!-- "+" button: opens the mode selector dropdown -->
+      <button class="plus-btn" id="plus-btn" onclick="toggleModeDropdown()">+</button>
+
+      <!-- Main text input -->
+      <input
+        type="text"
+        class="text-input"
+        id="user-input"
+        placeholder="Ask anything"
+        onkeydown="handleKeydown(event)"
+      />
+
+      <!-- Microphone (decorative for now — voice not implemented) -->
+      <button class="mic-btn" title="Voice input (not yet implemented)">🎤</button>
+
+      <!-- Send button -->
+      <button class="send-btn" id="send-btn" onclick="sendMessage()">↑</button>
+    </div>
+
+    <p class="disclaimer">Claude can make mistakes. Check important info.</p>
+  </footer>
+
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       JAVASCRIPT
+       All the interactive logic lives here.
+  ═══════════════════════════════════════════════════════════════════════════ -->
+  <script>
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // STATE
+    // This object holds everything the app needs to remember.
+    // It's the JavaScript equivalent of Streamlit's session_state.
+    // ─────────────────────────────────────────────────────────────────────────
+    const state = {
+      mode: "chat",              // "chat" or "assumption"
+
+      // For Chat mode: the full conversation history sent to Claude on each turn
+      chatMessages: [],
+
+      // For Assumption Negotiator mode: which step we're on
+      phase: "query",            // "query" → "assumption_review" → "new_consideration" → "done"
+
+      // The first API response (recommendation + 5 assumptions)
+      initialResponse: null,
+
+      // What the user said about each assumption
+      feedback: {
+        selected_responses: {},   // { "A1": 1, "A2": 0, ... }  (1=yes, 0=no)
+        new_assumptions: {}       // { "A6": "I have a nut allergy" }  (may be empty)
+      },
+    };
+
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // HELPER: Add a message to the chat
+    //
+    // role    → "user" or "assistant"
+    // content → the text to display (supports markdown for assistant messages)
+    // ─────────────────────────────────────────────────────────────────────────
+    function addMessage(role, content) {
+      hideEmptyState();
+
+      const chatInner = document.getElementById("chat-inner");
+
+      const row = document.createElement("div");
+      row.className = `message-row ${role}`;
+
+      const bubble = document.createElement("div");
+      bubble.className = `message-bubble ${role}`;
+
+      if (role === "assistant") {
+        // Parse markdown → HTML so Claude's formatting renders correctly
+        bubble.innerHTML = marked.parse(content);
+      } else {
+        // User messages: plain text, no markdown
+        bubble.textContent = content;
+      }
+
+      row.appendChild(bubble);
+      chatInner.appendChild(row);
+
+      // Add feedback icons below assistant messages (like ChatGPT)
+      if (role === "assistant") {
+        const feedbackRow = document.createElement("div");
+        feedbackRow.className = "feedback-row";
+        feedbackRow.innerHTML = `
+          <button class="feedback-icon" title="Good response" onclick="thumbsUp(this)">👍</button>
+          <button class="feedback-icon" title="Bad response">👎</button>
+          <button class="feedback-icon" title="Copy" onclick="copyMessage(this, '${encodeURIComponent(content)}')">📋</button>
+          <button class="feedback-icon" title="More options">•••</button>
+        `;
+        chatInner.appendChild(feedbackRow);
+      }
+
+      // Auto-scroll to the bottom
+      scrollToBottom();
+    }
+
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // HELPER: Show a typing indicator (animated dots while waiting for response)
+    // Returns the element so we can remove it later.
+    // ─────────────────────────────────────────────────────────────────────────
+    function showTypingIndicator() {
+      const chatInner = document.getElementById("chat-inner");
+      const row = document.createElement("div");
+      row.className = "message-row assistant";
+      row.id = "typing-indicator";
+      row.innerHTML = `
+        <div class="typing-indicator">
+          <span></span><span></span><span></span>
+        </div>
+      `;
+      chatInner.appendChild(row);
+      scrollToBottom();
+      return row;
+    }
+
+    function removeTypingIndicator() {
+      const indicator = document.getElementById("typing-indicator");
+      if (indicator) indicator.remove();
+    }
+
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // HELPER: Create an empty assistant bubble for streaming
+    //
+    // Used by handleChatMessage() when streaming is active.
+    // Instead of building the bubble all at once (like addMessage does),
+    // we create it empty first, then fill it in chunk-by-chunk as text arrives.
+    //
+    // Returns the bubble <div> so the caller can keep appending text to it.
+    // ─────────────────────────────────────────────────────────────────────────
+    function createAssistantBubble() {
+      hideEmptyState();
+      const chatInner = document.getElementById("chat-inner");
+
+      const row = document.createElement("div");
+      row.className = "message-row assistant";
+
+      const bubble = document.createElement("div");
+      bubble.className = "message-bubble assistant";
+
+      row.appendChild(bubble);
+      chatInner.appendChild(row);
+      scrollToBottom();
+
+      return bubble;
+    }
+
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // HELPERS: Scroll, empty state, disable input
+    // ─────────────────────────────────────────────────────────────────────────
+    function scrollToBottom() {
+      const chatArea = document.getElementById("chat-area");
+      chatArea.scrollTop = chatArea.scrollHeight;
+    }
+
+    function hideEmptyState() {
+      const el = document.getElementById("empty-state");
+      if (el) el.style.display = "none";
+    }
+
+    function setInputDisabled(disabled) {
+      document.getElementById("user-input").disabled = disabled;
+      document.getElementById("send-btn").disabled = disabled;
+    }
+
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // SEND MESSAGE
+    // Reads the input field and routes to the correct handler based on mode.
+    // ─────────────────────────────────────────────────────────────────────────
+    function sendMessage() {
+      const input = document.getElementById("user-input");
+      const text = input.value.trim();
+      if (!text) return;
+
+      input.value = "";   // Clear the input field
+
+      if (state.mode === "chat") {
+        handleChatMessage(text);
+      } else if (state.mode === "assumption") {
+        // In assumption mode, the regular input is only used in "query" phase
+        if (state.phase === "query") {
+          handleAssumptionQuery(text);
+        }
+        // Other phases use buttons/specialized inputs, not the main text input
+      }
+    }
+
+    // Press Enter to send (Shift+Enter for new line)
+    function handleKeydown(event) {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        sendMessage();
+      }
+    }
+
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // MODE SWITCHING
+    // "+" button opens a dropdown to choose between Chat and Assumption Negotiator.
+    // ─────────────────────────────────────────────────────────────────────────
+    function toggleModeDropdown() {
+      const dropdown = document.getElementById("mode-dropdown");
+      dropdown.classList.toggle("hidden");
+    }
+
+    function activateChatMode() {
+      document.getElementById("mode-dropdown").classList.add("hidden");
+      if (state.mode === "chat") return;
+
+      // Reset to chat mode
+      state.mode = "chat";
+      state.chatMessages = [];
+      state.phase = "query";
+      state.initialResponse = null;
+      state.feedback = { selected_responses: {}, new_assumptions: {} };
+
+      // Hide the purple pill
+      document.getElementById("mode-pill").classList.add("hidden");
+
+      // Clear the chat
+      document.getElementById("chat-inner").innerHTML = "";
+      document.getElementById("empty-state").style.display = "";
+
+      document.getElementById("user-input").placeholder = "Ask anything";
+    }
+
+    function activateAssumptionMode() {
+      document.getElementById("mode-dropdown").classList.add("hidden");
+      if (state.mode === "assumption") return;
+
+      // Switch to assumption mode
+      state.mode = "assumption";
+      state.phase = "query";
+      state.chatMessages = [];
+      state.initialResponse = null;
+      state.feedback = { selected_responses: {}, new_assumptions: {} };
+
+      // Show the purple mode pill in the header
+      document.getElementById("mode-pill").classList.remove("hidden");
+
+      // Clear the chat and show a prompt
+      document.getElementById("chat-inner").innerHTML = "";
+      hideEmptyState();
+
+      addMessage("assistant",
+        "**Assumption Negotiator** mode is active.\n\n" +
+        "Describe your decision or question, and I'll give you a recommendation " +
+        "along with the assumptions behind it. You can then tell me which assumptions " +
+        "are correct for your situation."
+      );
+
+      document.getElementById("user-input").placeholder = "Describe your decision...";
+    }
+
+    function exitAssumptionMode() {
+      activateChatMode();
+    }
+
+    // Close the dropdown if user clicks anywhere else on the page
+    document.addEventListener("click", function(event) {
+      const dropdown = document.getElementById("mode-dropdown");
+      const plusBtn = document.getElementById("plus-btn");
+      if (!dropdown.contains(event.target) && event.target !== plusBtn) {
+        dropdown.classList.add("hidden");
+      }
+    });
+
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // CHAT MODE: Handle a message (streaming version)
+    //
+    // HOW STREAMING WORKS HERE:
+    //   1. We open a connection to /api/chat (POST request)
+    //   2. The server keeps the connection open and sends text chunks one by one
+    //   3. We read those chunks using response.body.getReader() — a browser API
+    //      that lets us process bytes as they arrive, without waiting for the end
+    //   4. We decode the SSE format ("data: {...}\n\n") and extract the text
+    //   5. We update the bubble on screen with each new chunk
+    //
+    // This replaces the old approach of: wait → get full JSON → display all at once
+    // ─────────────────────────────────────────────────────────────────────────
+    async function handleChatMessage(text) {
+      addMessage("user", text);
+      setInputDisabled(true);
+
+      // Add to the conversation history (Claude needs all previous messages for context)
+      state.chatMessages.push({ role: "user", content: text });
+
+      // Show typing dots while waiting for the connection to open
+      showTypingIndicator();
+
+      try {
+        const response = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ messages: state.chatMessages }),
+        });
+
+        // Connection is open — replace typing dots with an empty assistant bubble
+        removeTypingIndicator();
+        const bubble = createAssistantBubble();
+
+        // Set up the stream reader
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+
+        let buffer = "";    // Holds partial SSE data between reads (events can split across reads)
+        let fullText = "";  // Accumulates the complete reply for saving to history
+
+        // Keep reading until the server sends [DONE] or closes the connection
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          // Convert the raw bytes into a string, add to our running buffer
+          buffer += decoder.decode(value, { stream: true });
+
+          // SSE events are separated by double newlines (\n\n)
+          // Split on \n\n to get complete events; the last part may be incomplete
+          const parts = buffer.split("\n\n");
+          buffer = parts.pop();  // Save the possibly-incomplete tail for next loop
+
+          for (const part of parts) {
+            if (!part.startsWith("data: ")) continue;  // Skip blank lines
+
+            const payload = part.slice(6);             // Strip the "data: " prefix
+            if (payload === "[DONE]") continue;        // Stream is finished
+
+            const chunk = JSON.parse(payload);
+            if (chunk.error) {
+              // Server-side error — display it so we can diagnose
+              bubble.textContent = "⚠️ Server error: " + chunk.error;
+              break;
+            }
+            if (chunk.text) {
+              fullText += chunk.text;
+              // Re-render the bubble each time so markdown (bold, lists, etc.) stays correct
+              bubble.innerHTML = marked.parse(fullText);
+              scrollToBottom();
+            }
+          }
+        }
+
+        // Save the full reply to conversation history for the next turn
+        state.chatMessages.push({ role: "assistant", content: fullText });
+
+        // Add the feedback icons (👍 👎 📋 •••) below the completed message
+        const chatInner = document.getElementById("chat-inner");
+        const feedbackRow = document.createElement("div");
+        feedbackRow.className = "feedback-row";
+        feedbackRow.innerHTML = `
+          <button class="feedback-icon" title="Good response" onclick="thumbsUp(this)">👍</button>
+          <button class="feedback-icon" title="Bad response">👎</button>
+          <button class="feedback-icon" title="Copy" onclick="copyMessage(this, '${encodeURIComponent(fullText)}')">📋</button>
+          <button class="feedback-icon" title="More options">•••</button>
+        `;
+        chatInner.appendChild(feedbackRow);
+
+      } catch (error) {
+        removeTypingIndicator();
+        addMessage("assistant", "⚠️ Something went wrong. Please try again.");
+        console.error(error);
+      }
+
+      setInputDisabled(false);
+      document.getElementById("user-input").focus();
+    }
+
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // ASSUMPTION MODE — PHASE 1: Query
+    // User types their question. We call /api/initial and show the recommendation.
+    // ─────────────────────────────────────────────────────────────────────────
+    async function handleAssumptionQuery(text) {
+      addMessage("user", text);
+      setInputDisabled(true);
+
+      const typingEl = showTypingIndicator();
+
+      try {
+        const response = await fetch("/api/initial", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: text }),
+        });
+
+        const data = await response.json();
+        removeTypingIndicator();
+
+        state.initialResponse = data;
+        state.phase = "assumption_review";
+
+        // Display the recommendation
+        addMessage("assistant",
+          `**My initial recommendation:** ${data.recommendation}\n\n` +
+          `---\n\n` +
+          `I made some assumptions to reach this recommendation. ` +
+          `Please review each one below:`
+        );
+
+        // Show assumption cards
+        showAssumptionCards(data.assumptions);
+
+      } catch (error) {
+        removeTypingIndicator();
+        addMessage("assistant", "⚠️ Something went wrong. Please try again.");
+        console.error(error);
+        setInputDisabled(false);
+      }
+    }
+
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // ASSUMPTION MODE — PHASE 2: Show assumption cards
+    // Renders each assumption as a card with Yes/No buttons.
+    // ─────────────────────────────────────────────────────────────────────────
+    function showAssumptionCards(assumptions) {
+      const chatInner = document.getElementById("chat-inner");
+
+      // Container for all the assumption cards
+      const wrapper = document.createElement("div");
+      wrapper.className = "assumption-cards-wrapper";
+      wrapper.id = "assumption-cards-wrapper";
+
+      const label = document.createElement("div");
+      label.className = "section-label";
+      label.textContent = "Review each assumption:";
+      wrapper.appendChild(label);
+
+      Object.entries(assumptions).forEach(([key, text]) => {
+        const card = document.createElement("div");
+        card.className = "assumption-card";
+        card.id = `card-${key}`;
+
+        card.innerHTML = `
+          <div class="assumption-key">${key}</div>
+          <div class="assumption-text">${text}</div>
+          <div class="assumption-buttons" id="buttons-${key}">
+            <button class="assumption-btn yes" onclick="answerAssumption('${key}', 1)">✓ Yes, this applies</button>
+            <button class="assumption-btn no"  onclick="answerAssumption('${key}', 0)">✗ No, this doesn't</button>
+          </div>
+        `;
+
+        wrapper.appendChild(card);
+      });
+
+      chatInner.appendChild(wrapper);
+      scrollToBottom();
+    }
+
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // ASSUMPTION MODE — Record a yes/no answer for one assumption
+    // When all are answered, moves to the "add new factor?" step.
+    // ─────────────────────────────────────────────────────────────────────────
+    function answerAssumption(key, value) {
+      // Record the answer (1=yes, 0=no)
+      state.feedback.selected_responses[key] = value;
+
+      // Update the card to show the locked-in result
+      const card = document.getElementById(`card-${key}`);
+      const buttonsDiv = document.getElementById(`buttons-${key}`);
+
+      if (value === 1) {
+        card.classList.add("accepted");
+        buttonsDiv.innerHTML = `<span class="assumption-result yes">✓ Accepted</span>`;
+      } else {
+        card.classList.add("rejected");
+        buttonsDiv.innerHTML = `<span class="assumption-result no">✗ Rejected</span>`;
+      }
+
+      // Check if ALL assumptions have been answered
+      const totalAssumptions = Object.keys(state.initialResponse.assumptions).length;
+      const answeredCount = Object.keys(state.feedback.selected_responses).length;
+
+      if (answeredCount === totalAssumptions) {
+        // All done — show the "add new factor?" step
+        state.phase = "new_consideration";
+        showNewFactorSection();
+      }
+    }
+
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // ASSUMPTION MODE — PHASE 3: New consideration
+    // Ask if the user wants to add a factor the AI didn't consider.
+    // ─────────────────────────────────────────────────────────────────────────
+    function showNewFactorSection() {
+      const chatInner = document.getElementById("chat-inner");
+
+      const section = document.createElement("div");
+      section.className = "new-factor-section";
+      section.id = "new-factor-section";
+
+      section.innerHTML = `
+        <p class="new-factor-question">
+          Is there anything else you'd like me to consider that wasn't in my assumptions?
+        </p>
+        <div class="new-factor-buttons">
+          <button class="action-btn" onclick="showNewFactorInput()">+ Yes, add a factor</button>
+          <button class="action-btn primary" onclick="generateRevised()">Generate revised recommendation →</button>
+        </div>
+        <div id="new-factor-input-area" style="display:none;">
+          <div class="new-factor-input-row">
+            <input type="text" class="new-factor-text" id="new-factor-text"
+                   placeholder="e.g. I have a nut allergy"
+                   onkeydown="if(event.key==='Enter') submitNewFactor()" />
+            <button class="action-btn primary" onclick="submitNewFactor()">Submit →</button>
+          </div>
+        </div>
+      `;
+
+      chatInner.appendChild(section);
+      scrollToBottom();
+    }
+
+    function showNewFactorInput() {
+      document.getElementById("new-factor-input-area").style.display = "block";
+      document.getElementById("new-factor-text").focus();
+      scrollToBottom();
+    }
+
+    function submitNewFactor() {
+      const text = document.getElementById("new-factor-text").value.trim();
+      if (!text) return;
+
+      // Store the new factor
+      const newId = "A" + (Object.keys(state.initialResponse.assumptions).length + 1);
+      state.feedback.new_assumptions = { [newId]: text };
+
+      generateRevised();
+    }
+
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // ASSUMPTION MODE — PHASE 4: Generate revised recommendation
+    // Calls /api/revise and displays the final recommendation.
+    // ─────────────────────────────────────────────────────────────────────────
+    async function generateRevised() {
+      state.phase = "generating_revised";
+
+      // Remove the "new factor" section UI — it's no longer needed
+      const newFactorSection = document.getElementById("new-factor-section");
+      if (newFactorSection) newFactorSection.remove();
+
+      const typingEl = showTypingIndicator();
+
+      try {
+        const response = await fetch("/api/revise", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            initial_response: state.initialResponse,
+            feedback: state.feedback,
+          }),
+        });
+
+        const data = await response.json();
+        removeTypingIndicator();
+
+        // Display the revised recommendation
+        addMessage("assistant", `**Revised Recommendation:** ${data.recommendation}`);
+
+        state.phase = "done";
+        showRestartButton();
+
+      } catch (error) {
+        removeTypingIndicator();
+        addMessage("assistant", "⚠️ Something went wrong generating the revised recommendation.");
+        console.error(error);
+      }
+    }
+
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // ASSUMPTION MODE — PHASE 5: Done
+    // Show a "Start new query" button below the final recommendation.
+    // ─────────────────────────────────────────────────────────────────────────
+    function showRestartButton() {
+      const chatInner = document.getElementById("chat-inner");
+
+      const wrapper = document.createElement("div");
+      wrapper.style.cssText = "max-width:48rem; margin: 0 auto; padding: 8px 16px;";
+
+      const btn = document.createElement("button");
+      btn.className = "action-btn";
+      btn.textContent = "🔄 Start a new query";
+      btn.onclick = function() {
+        // Reset assumption state and clear the chat (keep assumption mode active)
+        state.phase = "query";
+        state.initialResponse = null;
+        state.feedback = { selected_responses: {}, new_assumptions: {} };
+
+        document.getElementById("chat-inner").innerHTML = "";
+
+        addMessage("assistant",
+          "Ready for a new query. What decision would you like help with?"
+        );
+
+        setInputDisabled(false);
+        document.getElementById("user-input").focus();
+      };
+
+      wrapper.appendChild(btn);
+      chatInner.appendChild(wrapper);
+      scrollToBottom();
+    }
+
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // FEEDBACK ICON HANDLERS
+    // ─────────────────────────────────────────────────────────────────────────
+    function thumbsUp(btn) {
+      btn.textContent = "👍";
+      btn.style.color = "#16a34a";
+    }
+
+    function copyMessage(btn, encodedContent) {
+      const content = decodeURIComponent(encodedContent);
+      navigator.clipboard.writeText(content).then(() => {
+        btn.textContent = "✓";
+        setTimeout(() => { btn.textContent = "📋"; }, 2000);
+      });
+    }
+
+  </script>
+
+</body>
+</html>

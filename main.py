@@ -29,8 +29,8 @@ def generate_initial_response(user_input):
         model="claude-sonnet-4-20250514",
         max_tokens=1024,
         system="""
-            You are an assistant that provides recommendations based on user queries. For each recommendation,
-            also provide a list of 5 key assumptions that you made to arrive at that recommendation. 
+            You are an assistant that provides recommendations based on user queries. Select only one recommendation clearly; recommendation should NOT include multiple options. For each recommendation,
+            also provide a list of 5 key assumptions that you made to arrive at that recommendation. The 5 assumptions should cover the most important factors that influenced your recommendation.  
             IMPORTANT GUIDELINES FOR ASSUMPTIONS:
                 - State assumptions in POSITIVE form, avoid double negatives
                 - Instead of "You don't have lactose intolerance", say "You can consume dairy products without issues"
@@ -161,6 +161,7 @@ def generate_revised_response(response, feedback):
             - Consider trade-offs between conflicting factors
             - The recommendation should reflect a holistic view of ALL accepted assumptions
             - Explain how you're balancing multiple factors if they conflict
+            - Finally, provide a clear recommendation that leans toward one option.
 
             The return format should only be in valid raw JSON without any markdown formatting, code blocks, or additional text. 
             Do NOT use ```json or ``` markers. The JSON should follow this exact structure:

@@ -1,1 +1,3 @@
 anthropic
+flask              # only needed for the older app_flask.py version
+streamlit>=1.39    # only needed for the older Streamlit versions (app.py, app_buttons.py, app_chat.py)
