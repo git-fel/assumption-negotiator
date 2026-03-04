@@ -51,24 +51,36 @@ This does a few things:
 
 ### Getting It Running
 
-**1. Install dependencies**
-```bash
-pip install -r requirements.txt
+**1. Go to project folder**
+```
+cd /path/to/your/project
 ```
 
-**2. Set up your API key**
+**2. Create and activate a virtual environment**
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+
+**3. Install dependencies**
+```bash
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+**4. Set up your API key**
 
 Add this to your `~/.zshrc` (or `~/.bashrc` if you're using bash):
 ```bash
 export ANTHROPIC_API_KEY="your-api-key-here"
 ```
 
-Then reload:
+Save and reload:
 ```bash
 source ~/.zshrc
 ```
 
-**3. Run it**
+**5. Run it**
 ```bash
 python main.py
 ```
