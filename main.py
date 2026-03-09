@@ -2,6 +2,7 @@
 import os
 import json
 from anthropic import Anthropic
+from prompts import INITIAL_SYSTEM_PROMPT, REVISE_SYSTEM_PROMPT
 
 client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))  # set this environment variable with API key
 
@@ -28,26 +29,7 @@ def generate_initial_response(user_input):
     response = client.messages.create(
         model="claude-sonnet-4-20250514",
         max_tokens=1024,
-        system="""
-            You are an assistant that provides recommendations based on user queries. Select only one recommendation clearly; recommendation should NOT include multiple options. For each recommendation,
-            also provide a list of 5 key assumptions that you made to arrive at that recommendation. The 5 assumptions should cover the most important factors that influenced your recommendation.  
-            IMPORTANT GUIDELINES FOR ASSUMPTIONS:
-                - State assumptions in POSITIVE form, avoid double negatives
-                - Instead of "You don't have lactose intolerance", say "You can consume dairy products without issues"
-                - Instead of "Cost difference isn't a deciding factor", say "You're willing to pay more for quality"
-                - Make assumptions clear and easy to confirm with yes/no
-
-            The return format should only be in valid raw JSON without any markdown formatting, code blocks, or 
-            additional text. Do NOT use ```json or ``` markers. The JSON should follow this exact structure:
-            {
-                "recommendation": "X",
-                "assumptions": {
-                        "A1": "Assumption 1 details...",
-                        "A2": "Assumption 2 details..."
-                }
-            }
-            """,
-
+        system=INITIAL_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_input}]
     )
     llm_response_text = response.content[0].text  #structured format but in text form
@@ -133,57 +115,41 @@ def generate_revised_response(response, feedback):
             - 'assumptions': dict, the validated and new assumptions
 
     """
-    llm_input_data = {
-        "old_recommendation": {},
-        "assumptions": {}
-    }
-
-    # Add the old recommendation as context for the LLM
-    llm_input_data["old_recommendation"] = response["recommendation"]
-
-    # Add accepted assumptions from feedback
+    # Separate the user's feedback into two clear groups:
+    # - accepted: the user confirmed these are TRUE for their situation
+    # - rejected: the user said these are FALSE — they actively contradict the original reasoning
+    accepted = {}
+    rejected = {}
     for key, value in feedback["selected_responses"].items():
         if value == 1:
-            llm_input_data["assumptions"][key] = response["assumptions"][key]
-    
-    # Add new assumptions from feedback
-    llm_input_data["assumptions"].update(feedback["new_assumptions"])
+            accepted[key] = response["assumptions"][key]
+        else:
+            rejected[key] = response["assumptions"][key]
+
+    new_considerations = feedback.get("new_assumptions", {})
 
     api_response = client.messages.create(
         model="claude-sonnet-4-20250514",
         max_tokens=1024,
-        system="""
-            You are an assistant helping a user refine their decision through assumption negotiation.
-
-            YOUR TASK:
-            Generate a revised recommendation that BALANCES ALL the accepted assumptions AND new considerations.
-            - Do NOT let any single factor dominate the decision
-            - Consider trade-offs between conflicting factors
-            - The recommendation should reflect a holistic view of ALL accepted assumptions
-            - Explain how you're balancing multiple factors if they conflict
-            - Finally, provide a clear recommendation that leans toward one option.
-
-            The return format should only be in valid raw JSON without any markdown formatting, code blocks, or additional text. 
-            Do NOT use ```json or ``` markers. The JSON should follow this exact structure:
-            {
-                "recommendation": "X",
-                "assumptions": {
-                    "A1": "Assumption 1 details...",
-                    "A2": "Assumption 2 details..."
-                }
-            }
-        """,
+        system=REVISE_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": f"""
-                    INITIAL RECOMMENDATION: 
-                        {llm_input_data["old_recommendation"]}
-                    
-                    ACCEPTED ASSUMPTIONS (user confirmed these are correct): 
-                        {json.dumps(llm_input_data["assumptions"], indent=2)}
+                    INITIAL RECOMMENDATION (based on unverified assumptions — may no longer be valid):
+                        {response["recommendation"]}
 
-                    Please generate a REVISED recommendation that balances ALL these accepted assumptions.
-                    No single factor should dominate - consider the trade-offs.
-                """
-                }]
+                    ACCEPTED ASSUMPTIONS — the user confirmed these are TRUE for their situation:
+                        {json.dumps(accepted, indent=2) if accepted else "(none accepted)"}
+
+                    REJECTED ASSUMPTIONS — the user confirmed these are FALSE for their situation:
+                        {json.dumps(rejected, indent=2) if rejected else "(none rejected)"}
+
+                    NEW CONSIDERATIONS added by the user:
+                        {json.dumps(new_considerations, indent=2) if new_considerations else "(none added)"}
+
+                    Generate a REVISED recommendation grounded in the accepted assumptions and new considerations.
+                    The rejected assumptions should shape what you do NOT recommend.
+                    If any rejected assumption was central to the original recommendation, your revised
+                    recommendation must meaningfully differ from the original.
+                """}]
     )
 
     revised_response = json.loads(api_response.content[0].text)  #convert to dict for Python processing

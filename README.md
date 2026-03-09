@@ -115,7 +115,7 @@ This serves a ChatGPT-accurate interface with:
 The system runs through three phases:
 
 ### Phase 1: Initial Recommendation
-1. You enter a query (like "What should I do about X?")
+1. You enter a query (e.g. "Should I rely on supplements for protein or just eat protein-rich foods to meet my protein needs?")
 2. Claude generates a recommendation plus 5 key assumptions stated in positive form
 3. You see the recommendation
 

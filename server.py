@@ -26,6 +26,7 @@ import json
 import os
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from anthropic import Anthropic
+from prompts import INITIAL_SYSTEM_PROMPT, REVISE_SYSTEM_PROMPT
 
 
 # ─── Request Handler ───────────────────────────────────────────────────────────
@@ -53,6 +54,9 @@ class ChatHandler(BaseHTTPRequestHandler):
 
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            # HTTP/1.1 requires Content-Length so the browser knows when the page ends
+            self.send_header("Content-Length", str(len(content)))
+            self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(content)
 
@@ -150,22 +154,7 @@ class ChatHandler(BaseHTTPRequestHandler):
         response = client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=1024,
-            system="""
-                You are an assistant that provides recommendations based on user queries.
-                For each recommendation, provide 5 key assumptions you made.
-                IMPORTANT:
-                  - State assumptions in POSITIVE form (avoid double negatives)
-                  - Make assumptions clear and easy to confirm with yes/no
-
-                Return ONLY valid raw JSON. No markdown, no code blocks:
-                {
-                    "recommendation": "X",
-                    "assumptions": {
-                        "A1": "Assumption 1...",
-                        "A2": "Assumption 2..."
-                    }
-                }
-            """,
+            system=INITIAL_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": body["query"]}],
         )
         return json.loads(response.content[0].text)
@@ -173,7 +162,11 @@ class ChatHandler(BaseHTTPRequestHandler):
     # ── Route: Generate Revised Recommendation ────────────────────────────────
     def _handle_revise(self, client, body):
         """
-        Generate a revised recommendation based on accepted assumptions.
+        Generate a revised recommendation based on the user's assumption feedback.
+
+        Key change from earlier version: rejected assumptions are now passed explicitly.
+        The model needs to know which assumptions are actively FALSE (not just absent)
+        so it can reason away from recommendations that depended on those assumptions.
 
         Input:  {
                     "initial_response": {"recommendation": "...", "assumptions": {...}},
@@ -185,34 +178,38 @@ class ChatHandler(BaseHTTPRequestHandler):
         initial = body["initial_response"]
         feedback = body["feedback"]
 
-        # Filter to only the accepted assumptions (value = 1) + any new ones
+        # Separate feedback into two groups with clear meaning:
+        # - accepted: confirmed TRUE for this user
+        # - rejected: confirmed FALSE — actively contradict the original reasoning
         accepted = {}
+        rejected = {}
         for key, value in feedback["selected_responses"].items():
             if value == 1:
                 accepted[key] = initial["assumptions"][key]
-        accepted.update(feedback.get("new_assumptions", {}))
+            else:
+                rejected[key] = initial["assumptions"][key]
+
+        new_considerations = feedback.get("new_assumptions", {})
 
         response = client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=1024,
-            system="""
-                You are an assistant helping a user refine their decision through assumption negotiation.
-                Generate a revised recommendation that BALANCES ALL accepted assumptions.
-                - Do NOT let any single factor dominate the decision
-                - Consider trade-offs between conflicting factors
-
-                Return ONLY valid raw JSON. No markdown, no code blocks:
-                {
-                    "recommendation": "X",
-                    "assumptions": {"A1": "...", "A2": "..."}
-                }
-            """,
+            system=REVISE_SYSTEM_PROMPT,
             messages=[{
                 "role": "user",
                 "content": (
-                    f"INITIAL RECOMMENDATION: {initial['recommendation']}\n\n"
-                    f"ACCEPTED ASSUMPTIONS:\n{json.dumps(accepted, indent=2)}\n\n"
-                    "Generate a revised recommendation balancing ALL these assumptions."
+                    f"INITIAL RECOMMENDATION (based on unverified assumptions — may no longer be valid):\n"
+                    f"    {initial['recommendation']}\n\n"
+                    f"ACCEPTED ASSUMPTIONS — the user confirmed these are TRUE:\n"
+                    f"    {json.dumps(accepted, indent=2) if accepted else '(none accepted)'}\n\n"
+                    f"REJECTED ASSUMPTIONS — the user confirmed these are FALSE:\n"
+                    f"    {json.dumps(rejected, indent=2) if rejected else '(none rejected)'}\n\n"
+                    f"NEW CONSIDERATIONS added by the user:\n"
+                    f"    {json.dumps(new_considerations, indent=2) if new_considerations else '(none added)'}\n\n"
+                    "Generate a REVISED recommendation grounded in the accepted assumptions and new considerations.\n"
+                    "The rejected assumptions should shape what you do NOT recommend.\n"
+                    "If any rejected assumption was central to the original recommendation, your revised\n"
+                    "recommendation must meaningfully differ from the original."
                 ),
             }],
         )
@@ -235,6 +232,8 @@ class ChatHandler(BaseHTTPRequestHandler):
         body = json.dumps({"error": message}).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(body)
 
